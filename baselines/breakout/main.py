@@ -34,7 +34,7 @@ _GAMMA = 0.95
 _LAMBDA = 0.95
 
 # Advantage type can be BASELINE, RANDOM_NOISE or BIAS
-_ADVANTAGE_TYPE = AdvantageType.BASELINE
+_ADVANTAGE_TYPE = AdvantageType.BIAS
 _RANDOM_NOISE_STDDEV = 0.002
 _CORRELATED_NOISE_COEFFICIENT = 0.08
 
@@ -286,12 +286,12 @@ def main():
         advantages_wrong = (advantages_wrong - advantages_wrong.mean()) / (advantages_wrong.std() + 1e-8)
 
         def _baseline_advantage(op):
-            advantages, key, _, _, _ = op
+            advantages, key, _, _ = op
             norm_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             return norm_advantages, key
         
         def _random_noise_advantage(op):
-            advantages, key, _, _, _ = op
+            advantages, key, _, _ = op
             norm_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             
             noise_key, new_key = jax.random.split(key)
@@ -299,13 +299,13 @@ def main():
             return norm_advantages + noise, new_key
         
         def _bias_advantage(op):
-            advantages, key, critic_params, obs, critic_model = op
+            advantages, key, critic_params, obs = op
             
-            bias_advantages = advantages + _CORRELATED_NOISE_COEFFICIENT * critic_model.apply({'params': critic_params}, obs).squeeze()
+            bias_advantages = advantages + _CORRELATED_NOISE_COEFFICIENT * critic.apply({'params': critic_params}, obs).squeeze()
             norm_advantages = (bias_advantages - bias_advantages.mean()) / (bias_advantages.std() + 1e-8)
             return norm_advantages, key
         
-        operand = (advantages, final_key, runner_state.critic_params, obs, critic)
+        operand = (advantages, final_key, runner_state.critic_params, obs)
     
         advantages, final_key = jax.lax.switch(
             index=_ADVANTAGE_TYPE.value - 1,

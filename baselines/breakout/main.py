@@ -1,0 +1,200 @@
+import chex
+import flax.linen as nn
+import gymnax
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import optax
+import typing
+
+import ppo
+import visualizations
+
+
+_PARALLEL_ENVS = 16
+_STEPS_PER_UPDATE = 256
+_TOTAL_STEPS = 1_000_000
+_ACTOR_LEARNING_RATE = 0.001
+_CRITIC_LEARNING_RATE = 0.001
+
+# PPO Hyperparameters
+_CLIP_EPSILON = 0.1
+_ENTROPY_COEFFICIENT = 0.1
+_GAMMA = 0.95
+_LAMBDA = 0.95
+
+
+class Policy(nn.Module):
+    action_space: int
+
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
+        x = obs.reshape((obs.shape[0], -1))
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.action_space)(x)
+        return x
+
+
+class Value(nn.Module):
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
+        x = obs.reshape((obs.shape[0], -1))
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x
+
+
+class RunnerState(typing.NamedTuple):
+    actor_params: typing.Any
+    critic_params: typing.Any
+    actor_opt_state: typing.Any
+    critic_opt_state: typing.Any
+    obs: jnp.ndarray
+    env_state: typing.Any
+    key: typing.Any
+
+
+ppo_impl = ppo.PPO(_CLIP_EPSILON, _ENTROPY_COEFFICIENT, _GAMMA, _LAMBDA, _PARALLEL_ENVS)
+
+
+def main():
+    key = jax.random.key(7)
+    keys = jax.random.split(key, _PARALLEL_ENVS)
+
+    env, env_params = gymnax.make('Breakout-MinAtar')
+    
+    reset = jax.vmap(env.reset, in_axes=(0, None,))
+
+    def auto_reset_step(rng: chex.PRNGKey,
+        state: gymnax.EnvState,
+        action: typing.Union[int, float],
+        params: gymnax.EnvParams):
+
+        step_key, reset_key = jax.random.split(rng)
+
+        n_obs, n_state, reward, done, info = env.step(step_key, state, action, params)
+
+        def reset_if_done(op):
+            key, env_params = op
+            return env.reset(key, env_params)
+
+        def carry_over_if_not_done(op):
+            return n_obs, n_state
+
+        final_obs, final_state = jax.lax.cond(
+            done,
+            reset_if_done,
+            carry_over_if_not_done,
+            operand=(reset_key, params)
+        )
+
+        return final_obs, final_state, reward, done, info
+
+    step = jax.vmap(auto_reset_step, in_axes=(0, 0, 0, None,))
+
+    obs, state = reset(keys, env_params)
+
+    key, actor_key, critic_key = jax.random.split(key, 3)
+
+    actor = Policy(env.action_space().n)
+    actor_params = actor.init(actor_key, obs)['params']
+    actor_solver = optax.adam(learning_rate=_ACTOR_LEARNING_RATE)
+    actor_opt_state = actor_solver.init(actor_params)
+
+    critic = Value()
+    critic_params = critic.init(critic_key, obs)['params']
+    critic_solver = optax.adam(learning_rate=_CRITIC_LEARNING_RATE)
+    critic_opt_state = critic_solver.init(critic_params)
+
+    @jax.jit
+    def train_step(runner_state: RunnerState):
+        def rollout(carry, _):
+            obs, env_state, key = carry
+
+            key, action_key, step_key = jax.random.split(key, 3)
+            keys = jax.random.split(step_key, _PARALLEL_ENVS)
+
+            values = critic.apply({'params': runner_state.critic_params}, obs).squeeze()
+            logits = actor.apply({'params': runner_state.actor_params}, obs)
+            actions = jax.random.categorical(action_key, logits)
+            n_obs, n_state, reward, done, _ = step(keys, env_state, actions, env_params)
+
+            log_probs = jnp.take_along_axis(nn.log_softmax(logits), actions[..., None], axis=-1).squeeze(-1)
+
+            transition = ppo.Trajectory(obs, values, actions, log_probs, reward, done)
+            
+            return (n_obs, n_state, key), transition
+
+        initial_carry = (runner_state.obs, runner_state.env_state, runner_state.key)
+        (final_obs, final_eval_state, final_key), trajectory = jax.lax.scan(rollout, initial_carry, None, length=_STEPS_PER_UPDATE)
+        
+        advantages = ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, obs).squeeze())
+        returns = ppo_impl.calc_returns(trajectory.reward, advantages)
+
+        def actor_loss_fn(actor_params):
+            new_logits = actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4))
+            return ppo_impl.policy_loss(new_logits, trajectory.log_prob.flatten(), advantages.flatten(), trajectory.action.flatten())
+
+        actor_loss, actor_grad = jax.value_and_grad(actor_loss_fn)(runner_state.actor_params)
+        actor_updates, actor_opt_state = actor_solver.update(actor_grad, runner_state.actor_opt_state, runner_state.actor_params)
+        actor_params = optax.apply_updates(runner_state.actor_params, actor_updates)
+
+        def critic_loss_fn(critic_params):
+            values = critic.apply({'params': critic_params}, trajectory.obs.reshape(-1, 10, 10, 4))
+            return ppo_impl.value_loss(values, returns.flatten())
+
+        critic_loss, critic_grad = jax.value_and_grad(critic_loss_fn)(runner_state.critic_params)
+        critic_updates, critic_opt_state = critic_solver.update(critic_grad, runner_state.critic_opt_state, runner_state.critic_params)
+        critic_params = optax.apply_updates(runner_state.critic_params, critic_updates)
+
+        new_runner_state = RunnerState(
+            actor_params=actor_params,
+            critic_params=critic_params,
+            actor_opt_state=actor_opt_state,
+            critic_opt_state=critic_opt_state,
+            obs=final_obs,
+            env_state=final_eval_state,
+            key=final_key
+        )
+
+        metrics = {
+            'actor_loss': actor_loss,
+            'critic_loss': critic_loss,
+            'avg_reward': trajectory.reward.mean()
+        }
+
+        return new_runner_state, metrics
+    
+    runner_state = RunnerState(actor_params, critic_params, actor_opt_state, critic_opt_state, obs, state, key)
+
+    actor_losses = []
+    critic_losses = []
+    avg_rewards = []
+
+    for i in range(0, _TOTAL_STEPS, _STEPS_PER_UPDATE):
+        runner_state, metrics = train_step(runner_state)
+
+        actor_losses.append(metrics['actor_loss'])
+        critic_losses.append(metrics['critic_loss'])
+        avg_rewards.append(metrics['avg_reward'])
+        
+        if i % 5000 * _STEPS_PER_UPDATE == 0:
+            print(f"Update {i}/{_TOTAL_STEPS}:")
+            print(f"  Actor Loss: {metrics['actor_loss']:.4f}")
+            print(f"  Critic Loss: {metrics['critic_loss']:.4f}")
+            print(f"  Average Reward: {metrics['avg_reward']:.4f}")
+
+    visualizations.policy_value_and_reward_chart(actor_losses, critic_losses, avg_rewards)
+    visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params)
+    visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params, with_salience=True, filename='agent_playback_salience.mp4')
+    visualizations.loss_location_heatmap(key, env, env_params, actor, runner_state.actor_params)
+
+
+if __name__ == '__main__':
+    main()

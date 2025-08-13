@@ -16,7 +16,7 @@ _STEPS_PER_UPDATE = 256
 _TOTAL_STEPS = 1_000_000
 _ACTOR_LEARNING_RATE = 0.001
 _CRITIC_LEARNING_RATE = 0.001
-_NUM_EVAL_EPISODES = 256
+_NUM_EVAL_EPISODES = 1024
 _FINAL_NUM_EVAL_EPISODES = 1024
 
 # PPO Hyperparameters
@@ -31,9 +31,55 @@ class Policy(nn.Module):
 
     @nn.compact
     def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
-        x = obs.reshape((obs.shape[0], -1))
-        x = nn.Dense(256)(x)
+        x = obs
+        x = nn.Conv(features=16, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
         x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=64, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.action_space)(x)
+        return x
+    
+
+class Policy2(nn.Module):
+    action_space: int
+
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
+        x = obs
+        x = nn.Conv(features=8, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=8, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = x.reshape((x.shape[0], -1))
         x = nn.Dense(128)(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_space)(x)
@@ -43,9 +89,52 @@ class Policy(nn.Module):
 class Value(nn.Module):
     @nn.compact
     def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
-        x = obs.reshape((obs.shape[0], -1))
-        x = nn.Dense(256)(x)
+        x = obs
+        x = nn.Conv(features=16, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
         x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=64, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x
+
+class Value2(nn.Module):
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
+        x = obs
+        x = nn.Conv(features=8, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=8, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=16, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='VALID')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4,), strides=(1, 1,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = x.reshape((x.shape[0], -1))
         x = nn.Dense(128)(x)
         x = nn.relu(x)
         x = nn.Dense(1)(x)
@@ -153,6 +242,8 @@ def main():
     critic_solver = optax.adam(learning_rate=_CRITIC_LEARNING_RATE)
     critic_opt_state = critic_solver.init(critic_params)
 
+    print(actor.tabulate(key, jnp.zeros((1, 10, 10, 4)), depth=1))
+
     @jax.jit
     def train_step(runner_state: RunnerState):
         def rollout(carry, _):
@@ -175,8 +266,10 @@ def main():
         initial_carry = (runner_state.obs, runner_state.env_state, runner_state.key)
         (final_obs, final_eval_state, final_key), trajectory = jax.lax.scan(rollout, initial_carry, None, length=_STEPS_PER_UPDATE)
         
-        advantages = ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, obs).squeeze())
+        advantages = ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, final_obs).squeeze())
         returns = ppo_impl.calc_returns(trajectory.reward, advantages)
+
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         def actor_loss_fn(actor_params):
             new_logits = actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4))
@@ -208,7 +301,8 @@ def main():
             'actor_loss': actor_loss,
             'critic_loss': critic_loss,
             'avg_reward': trajectory.reward.mean(),
-            'avg_entropy': ppo_impl.entropy_bonus(actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4)))
+            'avg_entropy': ppo_impl.entropy_bonus(actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4))),
+            'actor_grad': actor_grad
         }
 
         return new_runner_state, metrics
@@ -219,7 +313,9 @@ def main():
     critic_losses = []
     avg_step_rewards = []
     avg_episode_rewards = []
+    avg_episode_reward_steps = []
     entropies = []
+    grad_norms = {}
 
     for i in range(0, _TOTAL_STEPS, _STEPS_PER_UPDATE):
         runner_state, metrics = train_step(runner_state)
@@ -228,8 +324,19 @@ def main():
         critic_losses.append(metrics['critic_loss'])
         avg_step_rewards.append(metrics['avg_reward'])
         entropies.append(metrics['avg_entropy'])
+
+        actor_grads = metrics['actor_grad']
+        for layer_name in actor_grads.keys():
+            if layer_name not in grad_norms:
+                grad_norms[layer_name] = []
+            
+            layer_grad_tree = actor_grads[layer_name]
+            flat_grads = jnp.concatenate([g.flatten() for g in jax.tree_util.tree_leaves(layer_grad_tree)])
+            norm = jnp.linalg.norm(flat_grads)
+            grad_norms[layer_name].append(norm)
+                
         
-        if i % 5000 * _STEPS_PER_UPDATE == 0:
+        if i % 300 * _STEPS_PER_UPDATE == 0:
             key, eval_key = jax.random.split(runner_state.key)
             runner_state = runner_state._replace(key=key)
             
@@ -237,6 +344,8 @@ def main():
                 eval_key, env, env_params, actor, runner_state.actor_params, _NUM_EVAL_EPISODES
             )
             avg_episode_rewards.append(avg_episode_score)
+
+            avg_episode_reward_steps.append(len(actor_losses))
 
             print(f"Update {i}/{_TOTAL_STEPS}:")
             print(f"  Actor Loss: {metrics['actor_loss']:.4f}")
@@ -254,12 +363,14 @@ def main():
     print(f"Final Max Episode Reward: {max_episode_score:.2f}")
     print(f"Final Min Episode Reward: {min_episode_score:.2f}")
 
-    visualizations.policy_value_and_reward_chart(actor_losses, critic_losses, avg_step_rewards)
+    visualizations.policy_value_and_reward_chart(actor_losses, critic_losses, avg_episode_rewards, avg_episode_reward_steps)
     visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params)
     visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params, with_salience=True, filename='agent_playback_salience.mp4')
     visualizations.loss_location_heatmap(key, env, env_params, actor, runner_state.actor_params)
     visualizations.entropy_chart(entropies, env.action_space().n)
     visualizations.entropy_location_heatmap(key, env, env_params, actor, runner_state.actor_params)
+    visualizations.cnn_filter_visualization(runner_state.actor_params)
+    visualizations.plot_gradient_norms(grad_norms)
 
 
 if __name__ == '__main__':

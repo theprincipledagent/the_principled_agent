@@ -34,6 +34,10 @@ def policy_value_and_reward_chart(
         actor_losses: list[float],
         critic_losses: list[float],
         avg_rewards: list[float],
+        avg_episode_reward_steps: list[int],
+        include_lr_chart: bool = False,
+        actor_lrs: list[float] = [],
+        critic_lrs: list[float] = [],
         filename: str = 'losses_and_rewards.png'):
     plt.style.use('seaborn-v0_8-whitegrid')
 
@@ -48,6 +52,9 @@ def policy_value_and_reward_chart(
     ax1.tick_params(colors=_color_palette["text"])
     ax1.spines['bottom'].set_color(_color_palette["secondary"])
     ax1.spines['left'].set_color(_color_palette["secondary"])
+    if include_lr_chart:
+        ax4 = ax1.twinx()
+        ax4.plot(actor_lrs, color=_color_palette["secondary"], linestyle="--")
 
     ax2.plot(critic_losses, color=_color_palette["accent"], linewidth=2)
     ax2.set_title('Critic Loss Over Time', color=_color_palette["text"], fontsize=16, weight='bold')
@@ -56,8 +63,11 @@ def policy_value_and_reward_chart(
     ax2.tick_params(colors=_color_palette["text"])
     ax2.spines['bottom'].set_color(_color_palette["secondary"])
     ax2.spines['left'].set_color(_color_palette["secondary"])
+    if include_lr_chart:
+        ax5 = ax2.twinx()
+        ax5.plot(critic_lrs, color=_color_palette["secondary"], linestyle="--")
 
-    ax3.plot(avg_rewards, color=_color_palette["accent"], linewidth=2)
+    ax3.plot(avg_episode_reward_steps, avg_rewards, color=_color_palette["accent"], linewidth=2)
     ax3.set_title('Average Reward Over Time', color=_color_palette["text"], fontsize=16, weight='bold')
     ax3.set_ylabel('Reward', color=_color_palette["text"], fontsize=12)
     ax3.set_xlabel('Training Update Step', color=_color_palette["text"], fontsize=12)
@@ -447,6 +457,127 @@ def entropy_location_heatmap(key, env, env_params,  actor, actor_params, iterati
     ax2.set_xticklabels([])
     ax2.set_yticklabels([])
 
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )
+
+
+def _normalize_array(arr):
+    """Normalizes a numpy array to the [0, 1] range for visualization."""
+    min_val, max_val = arr.min(), arr.max()
+    if max_val - min_val > 0:
+        return jnp.clip((arr - min_val) / (max_val - min_val), 0.0, 1.0)
+    return np.zeros_like(arr)
+
+
+def cnn_filter_visualization(actor_params: dict, filename: str = 'cnn_filters.png'):
+    """
+    Visualizes the filters of the first convolutional layer in the actor network.
+    Creates a separate grid for each game object type to show what each filter
+    is sensitive to.
+    """
+    # --- 1. Extract the weights ---
+    first_conv_weights = actor_params['Conv_0']['kernel']
+    h, w, in_c, out_c = first_conv_weights.shape # Should be (3, 3, 4, 32)
+
+    # --- 2. Create separate lists of grayscale filters for each object ---
+    paddle_filters = []
+    ball_filters = []
+    brick_filters = []
+
+    for i in range(out_c):
+        filter_slice = first_conv_weights[:, :, :, i]
+        
+        # Combine ball weights
+        combined_ball_weights = filter_slice[:, :, 1] + filter_slice[:, :, 2]
+        
+        # Normalize each component separately and add to the corresponding list
+        paddle_filters.append(_normalize_array(filter_slice[:, :, 0]))
+        ball_filters.append(_normalize_array(combined_ball_weights))
+        brick_filters.append(_normalize_array(filter_slice[:, :, 3]))
+            
+    # --- 3. Plot the filters in three separate grids ---
+    # We will have 3 sections, each with a 4x8 grid of filters.
+    fig, axes = plt.subplots(nrows=3 * 4, ncols=8, figsize=(8 * 2, 3 * 4 * 2), constrained_layout=True)
+    fig.set_facecolor(_color_palette["background"])
+    fig.suptitle('First Layer CNN Filters by Object Type', fontsize=24, color=_color_palette["text"])
+
+    filter_lists = [
+        (paddle_filters, '       Paddle Filters'),
+        (ball_filters, '       Ball Filters'),
+        (brick_filters, '       Bricks Filters')
+    ]
+
+    for list_idx, (current_filters, title) in enumerate(filter_lists):
+        # Calculate the row offset for the current grid
+        row_offset = list_idx * 4
+
+        for i in range(4):      # Grid rows
+            for j in range(8):  # Grid columns
+                ax = axes[row_offset + i, j]
+                filter_idx = i * 8 + j
+
+                if i == 0 and j == 3:
+                    ax.set_title(title, fontsize=20, weight='bold',
+                                 color=_color_palette["text"], pad=20)
+                
+                if filter_idx < len(current_filters):
+                    # Plot the grayscale filter
+                    ax.imshow(current_filters[filter_idx], cmap=_custom_cmap_mpl, interpolation='nearest')
+                
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.spines['top'].set_color(_color_palette["secondary"])
+                ax.spines['bottom'].set_color(_color_palette["secondary"])
+                ax.spines['left'].set_color(_color_palette["secondary"])
+                ax.spines['right'].set_color(_color_palette["secondary"])
+    
+    plt.savefig(
+        filename,
+        dpi=150,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )
+
+
+def plot_gradient_norms(grad_norms: dict, smoothing_window: int = 50, filename: str = 'gradient_norms.png'):
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+    fig.set_facecolor(_color_palette["background"])
+
+    colors_to_cycle = [
+        _color_palette["primary"],   # Strong Blue
+        _color_palette["accent"],    # Digital Violet
+        _color_palette["secondary"], # Slate Gray
+        _color_palette["text"]       # Dark Charcoal (can work for a line color)
+    ]
+
+    for i, (layer_name, norms) in enumerate(grad_norms.items()):
+        if not norms:
+            continue
+
+        color = colors_to_cycle[i % len(colors_to_cycle)]
+
+        smoothed_norms = pd.Series(norms).rolling(window=smoothing_window, min_periods=1).mean()
+        ax.plot(smoothed_norms, color=color, linewidth=2.5, label=layer_name)
+
+    ax.set_yscale('log')
+    ax.set_title('Smoothed Gradient L2 Norm per Layer Over Time', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax.set_xlabel('Training Update Step', color=_color_palette["text"], fontsize=12)
+    ax.set_ylabel('Gradient L2 Norm (Log Scale)', color=_color_palette["text"], fontsize=12)
+    ax.set_facecolor(_color_palette["background"])
+    ax.tick_params(colors=_color_palette["text"])
+    ax.spines['bottom'].set_color(_color_palette["secondary"])
+    ax.spines['left'].set_color(_color_palette["secondary"])
+    
+    legend = ax.legend()
+    for text in legend.get_texts():
+        text.set_color(_color_palette["text"])
+
+    plt.tight_layout(pad=1.0)
     plt.savefig(
         filename,
         dpi=_DPI,

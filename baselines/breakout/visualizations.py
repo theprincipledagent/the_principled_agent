@@ -313,3 +313,143 @@ def loss_location_heatmap(key, env, env_params,  actor, actor_params, iterations
         bbox_inches='tight',
         facecolor=fig.get_facecolor()
     )
+
+
+def entropy_chart(entropy: list[float], total_actions: int, filename: str = 'entropy.png'):
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    max_entropy = math.log2(total_actions)
+
+    fig, (ax1) = plt.subplots(1, 1, figsize=(12, 6))
+
+    fig.set_facecolor(_color_palette["background"])
+
+    ax1.plot(entropy, color=_color_palette["accent"], linewidth=2)
+    ax1.set_title('Action Entropy Over Time', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax1.set_ylabel('Loss', color=_color_palette["text"], fontsize=12)
+    ax1.set_facecolor(_color_palette["background"])
+    ax1.tick_params(colors=_color_palette["text"])
+    ax1.spines['bottom'].set_color(_color_palette["secondary"])
+    ax1.spines['left'].set_color(_color_palette["secondary"])
+
+    ax1.axhline(
+        y=max_entropy,
+        color=_color_palette["secondary"],
+        linestyle='--',
+        linewidth=2,
+        label='Max Entropy'
+    )
+
+    plt.tight_layout(pad=3.0)
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )
+
+
+@functools.partial(jax.jit, static_argnames=('env', 'actor', 'iterations'))
+def _compute_average_entropy_map(key, env, env_params, actor, actor_params, iterations: int = 100):
+    keys = jax.random.split(key, iterations)
+    
+    def one_full_run(key):
+        key, reset_key = jax.random.split(key, 2)
+        obs, env_state = env.reset(reset_key, env_params)
+
+        def rollout(carry, _):
+            run_key, prev_obs, prev_env_state, prev_done, ball_e_map, paddle_e_map, ball_v_map, paddle_v_map = carry
+
+            def step_fn(c):
+                run_key, prev_obs, prev_env_state, _, prev_ball_e, prev_paddle_e, prev_ball_v, prev_paddle_v = c
+
+                key, action_key, step_key = jax.random.split(run_key, 3)
+
+                logits = actor.apply({'params': actor_params}, jnp.expand_dims(prev_obs, 0)).squeeze(0)
+                actions = jax.random.categorical(action_key, logits)
+                n_obs, n_env_state, _, done, _ = env.step(step_key, prev_env_state, actions, env_params)
+                
+                probs = jax.nn.softmax(logits)
+                entropy = -jnp.sum(probs * jnp.log2(probs + 1e-10))
+
+                ball_mask = prev_obs[:, :, 1] + prev_obs[:, :, 2]
+                paddle_mask = prev_obs[:, :, 0]
+                
+                ball_e_map = prev_ball_e + entropy * ball_mask
+                paddle_e_map = prev_paddle_e + entropy * paddle_mask
+
+                ball_v_map = prev_ball_v + ball_mask
+                paddle_v_map = prev_paddle_v + paddle_mask
+
+                return (key, n_obs, n_env_state, done, ball_e_map, paddle_e_map, ball_v_map, paddle_v_map), None
+            
+            def no_op_fn(c):
+                return c, None
+            
+            new_carry, _ = jax.lax.cond(
+                prev_done,
+                no_op_fn,
+                step_fn,
+                carry
+            )
+            return new_carry, None
+        
+        ball_entropy_map = jnp.zeros_like(obs[:, :, 0])
+        paddle_entropy_map = jnp.zeros_like(obs[:, :, 0])
+        ball_visit_map = jnp.zeros_like(obs[:, :, 0])
+        paddle_visit_map = jnp.zeros_like(obs[:, :, 0])
+
+        initial_carry = (key, obs, env_state, False, ball_entropy_map, paddle_entropy_map, ball_visit_map, paddle_visit_map)
+
+        (_, _, _, _, final_ball_e, final_paddle_e, final_ball_v, final_paddle_v), _ = jax.lax.scan(rollout, initial_carry, None, length=1_000)
+
+        return final_ball_e, final_paddle_e, final_ball_v, final_paddle_v
+
+    ball_e_maps, paddle_e_maps, ball_v_maps, paddle_v_maps = jax.vmap(one_full_run)(keys)
+
+    total_ball_entropy = jnp.sum(ball_e_maps, axis=0)
+    total_paddle_entropy = jnp.sum(paddle_e_maps, axis=0)
+    total_ball_visits = jnp.sum(ball_v_maps, axis=0)
+    total_paddle_visits = jnp.sum(paddle_v_maps, axis=0)
+    
+    avg_ball_entropy = total_ball_entropy / (total_ball_visits + 1e-10)
+    avg_paddle_entropy = total_paddle_entropy / (total_paddle_visits + 1e-10)
+
+    return avg_ball_entropy, avg_paddle_entropy
+
+
+def entropy_location_heatmap(key, env, env_params,  actor, actor_params, iterations: int = 100, filename: str = 'entropy_heatmap.png'):
+    ball_entropy_map, paddle_entropy_map = _compute_average_entropy_map(key, env, env_params, actor, actor_params, iterations)
+
+    plt.style.use('seaborn-v0_8-white')
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+    fig.set_facecolor(_color_palette["background"])
+
+    ax1.imshow(ball_entropy_map, cmap=_custom_cmap_mpl)
+    ax1.set_title('Ball Locations Heatmap', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax1.set_facecolor(_color_palette["background"])
+    ax1.tick_params(colors=_color_palette["text"])
+    ax1.spines['top'].set_color(_color_palette["secondary"])
+    ax1.spines['bottom'].set_color(_color_palette["secondary"])
+    ax1.spines['left'].set_color(_color_palette["secondary"])
+    ax1.spines['right'].set_color(_color_palette["secondary"])
+    ax1.set_xticklabels([])
+    ax1.set_yticklabels([])
+
+    ax2.imshow(paddle_entropy_map, cmap=_custom_cmap_mpl)
+    ax2.set_title('Paddle Location Heatmap', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax2.set_facecolor(_color_palette["background"])
+    ax2.tick_params(colors=_color_palette["text"])
+    ax2.spines['top'].set_color(_color_palette["secondary"])
+    ax2.spines['bottom'].set_color(_color_palette["secondary"])
+    ax2.spines['left'].set_color(_color_palette["secondary"])
+    ax2.spines['right'].set_color(_color_palette["secondary"])
+    ax2.set_xticklabels([])
+    ax2.set_yticklabels([])
+
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )

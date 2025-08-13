@@ -1,9 +1,9 @@
 import chex
 import flax.linen as nn
+import functools
 import gymnax
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import optax
 import typing
 
@@ -16,10 +16,12 @@ _STEPS_PER_UPDATE = 256
 _TOTAL_STEPS = 1_000_000
 _ACTOR_LEARNING_RATE = 0.001
 _CRITIC_LEARNING_RATE = 0.001
+_NUM_EVAL_EPISODES = 256
+_FINAL_NUM_EVAL_EPISODES = 1024
 
 # PPO Hyperparameters
 _CLIP_EPSILON = 0.1
-_ENTROPY_COEFFICIENT = 0.1
+_ENTROPY_COEFFICIENT = 0.05
 _GAMMA = 0.95
 _LAMBDA = 0.95
 
@@ -61,6 +63,45 @@ class RunnerState(typing.NamedTuple):
 
 
 ppo_impl = ppo.PPO(_CLIP_EPSILON, _ENTROPY_COEFFICIENT, _GAMMA, _LAMBDA, _PARALLEL_ENVS)
+
+@functools.partial(jax.jit, static_argnames=('env', 'actor', 'num_episodes'))
+def evaluate_agent(key, env, env_params, actor, actor_params, num_episodes: int):
+    """Runs the agent for a number of episodes and returns the total rewards."""
+    
+    def play_one_episode(rng):
+        """Plays one episode and returns the cumulative reward."""
+        rng, reset_rng = jax.random.split(rng)
+        obs, env_state = env.reset(reset_rng, env_params)
+        
+        def step_in_env(carry):
+            """A single step in the environment loop."""
+            rng, current_obs, current_env_state, cumulative_reward, done = carry
+            
+            def true_fn(c):
+                return c
+            
+            def false_fn(c):
+                rng, current_obs, current_env_state, cumulative_reward, _ = c
+                rng, action_rng, step_rng = jax.random.split(rng, 3)
+                
+                logits = actor.apply({'params': actor_params}, jnp.expand_dims(current_obs, 0))
+                action = jnp.argmax(logits, axis=-1)[0]
+                
+                n_obs, n_env_state, reward, n_done, _ = env.step(step_rng, current_env_state, action, env_params)
+                
+                return rng, n_obs, n_env_state, cumulative_reward + reward, n_done
+
+            return jax.lax.cond(done, true_fn, false_fn, carry)
+
+        initial_carry = (rng, obs, env_state, 0.0, False)
+        _, _, _, final_reward, _ = jax.lax.fori_loop(0, 1000, lambda _, val: step_in_env(val), initial_carry)
+        
+        return final_reward
+
+    keys = jax.random.split(key, num_episodes)
+    all_rewards = jax.vmap(play_one_episode)(keys)
+    
+    return jnp.mean(all_rewards), jnp.max(all_rewards), jnp.min(all_rewards)
 
 
 def main():
@@ -139,7 +180,7 @@ def main():
 
         def actor_loss_fn(actor_params):
             new_logits = actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4))
-            return ppo_impl.policy_loss(new_logits, trajectory.log_prob.flatten(), advantages.flatten(), trajectory.action.flatten())
+            return ppo_impl.ppo_loss(new_logits, trajectory.log_prob.flatten(), advantages.flatten(), trajectory.action.flatten())
 
         actor_loss, actor_grad = jax.value_and_grad(actor_loss_fn)(runner_state.actor_params)
         actor_updates, actor_opt_state = actor_solver.update(actor_grad, runner_state.actor_opt_state, runner_state.actor_params)
@@ -166,7 +207,8 @@ def main():
         metrics = {
             'actor_loss': actor_loss,
             'critic_loss': critic_loss,
-            'avg_reward': trajectory.reward.mean()
+            'avg_reward': trajectory.reward.mean(),
+            'avg_entropy': ppo_impl.entropy_bonus(actor.apply({'params': actor_params}, trajectory.obs.reshape(-1, 10, 10, 4)))
         }
 
         return new_runner_state, metrics
@@ -175,25 +217,49 @@ def main():
 
     actor_losses = []
     critic_losses = []
-    avg_rewards = []
+    avg_step_rewards = []
+    avg_episode_rewards = []
+    entropies = []
 
     for i in range(0, _TOTAL_STEPS, _STEPS_PER_UPDATE):
         runner_state, metrics = train_step(runner_state)
 
         actor_losses.append(metrics['actor_loss'])
         critic_losses.append(metrics['critic_loss'])
-        avg_rewards.append(metrics['avg_reward'])
+        avg_step_rewards.append(metrics['avg_reward'])
+        entropies.append(metrics['avg_entropy'])
         
         if i % 5000 * _STEPS_PER_UPDATE == 0:
+            key, eval_key = jax.random.split(runner_state.key)
+            runner_state = runner_state._replace(key=key)
+            
+            avg_episode_score, _, _ = evaluate_agent(
+                eval_key, env, env_params, actor, runner_state.actor_params, _NUM_EVAL_EPISODES
+            )
+            avg_episode_rewards.append(avg_episode_score)
+
             print(f"Update {i}/{_TOTAL_STEPS}:")
             print(f"  Actor Loss: {metrics['actor_loss']:.4f}")
             print(f"  Critic Loss: {metrics['critic_loss']:.4f}")
-            print(f"  Average Reward: {metrics['avg_reward']:.4f}")
+            print(f"  Average Step Reward: {metrics['avg_reward']:.4f}")
+            print(f"  Average Episode Reward: {avg_episode_score:.2f}")
+            print(f"  Avg Entropy: {metrics['avg_entropy']:.4f}")
 
-    visualizations.policy_value_and_reward_chart(actor_losses, critic_losses, avg_rewards)
+    key, eval_key = jax.random.split(runner_state.key)
+    avg_episode_score, max_episode_score, min_episode_score = evaluate_agent(
+        eval_key, env, env_params, actor, runner_state.actor_params, _FINAL_NUM_EVAL_EPISODES
+    )
+
+    print(f"Final Average Episode Reward: {avg_episode_score:.2f}")
+    print(f"Final Max Episode Reward: {max_episode_score:.2f}")
+    print(f"Final Min Episode Reward: {min_episode_score:.2f}")
+
+    visualizations.policy_value_and_reward_chart(actor_losses, critic_losses, avg_step_rewards)
     visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params)
     visualizations.generate_full_agent_playback(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params, with_salience=True, filename='agent_playback_salience.mp4')
     visualizations.loss_location_heatmap(key, env, env_params, actor, runner_state.actor_params)
+    visualizations.entropy_chart(entropies, env.action_space().n)
+    visualizations.entropy_location_heatmap(key, env, env_params, actor, runner_state.actor_params)
 
 
 if __name__ == '__main__':

@@ -26,15 +26,15 @@ class PPO:
         self._parallel_envs = parallel_envs
 
 
-    def calc_advantage_delta(self, values: jnp.ndarray, n_values: jnp.ndarray, rewards: jnp.ndarray, dones: jnp.ndarray) -> jnp.ndarray:
-        return rewards + self._gamma * n_values * (1 - dones) - values
+    def calc_advantage_delta(self, values: jnp.ndarray, n_values: jnp.ndarray, rewards: jnp.ndarray, dones: jnp.ndarray, tau: float) -> jnp.ndarray:
+        return rewards + self._gamma * n_values * (1 - dones) - ((1 + tau) * values)
 
 
-    def calc_advantages(self, values: jnp.ndarray, rewards: jnp.ndarray, dones: jnp.ndarray, final_values: jnp.ndarray) -> jnp.ndarray:
+    def calc_advantages(self, values: jnp.ndarray, rewards: jnp.ndarray, dones: jnp.ndarray, final_values: jnp.ndarray, tau: float) -> jnp.ndarray:
         n_values = values[1:]
         n_values = jnp.append(n_values, jnp.expand_dims(final_values, 0), axis=0)
 
-        deltas = self.calc_advantage_delta(values, n_values, rewards, dones)
+        deltas = self.calc_advantage_delta(values, n_values, rewards, dones, tau)
 
         def scan_fn(carry, x):
             new_carry =  x[0] + self._gamma * self._lambda * carry * (1 - x[1])

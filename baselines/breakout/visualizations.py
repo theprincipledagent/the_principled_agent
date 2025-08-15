@@ -21,7 +21,7 @@ _color_palette = {
 
 _custom_cmap_mpl = mcolors.LinearSegmentedColormap.from_list(
     'maximizingreward_cmap_mpl', 
-    [_color_palette['background'], _color_palette['accent']]
+    [_color_palette['primary'], _color_palette['secondary'], _color_palette['accent']]
 )
 
 
@@ -603,6 +603,117 @@ def plot_advantages(adv_min: list[float], adv_max: list[float], filename: str = 
     ax1.spines['left'].set_color(_color_palette["secondary"])
 
     plt.tight_layout(pad=3.0)
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )
+
+
+def plot_uncertainty_vs_entropy(
+    key, 
+    env, 
+    env_params,  
+    actor, 
+    actor_params, 
+    critic,
+    critic_params,
+    num_observations: int = 500,
+    num_mc_samples: int = 100,
+    filename: str = 'uncertainty_vs_entropy.png'
+):
+    @jax.jit
+    def _calculate_for_single_obs(key, obs):
+        def _single_pass(dropout_key):
+            obs_batch = jnp.expand_dims(obs, 0)
+            
+            value = critic.apply(
+                {'params': critic_params},
+                obs_batch,
+                use_dropout=True,
+                rngs={'dropout': dropout_key}
+            )
+            return value.squeeze()
+
+        mc_keys = jax.random.split(key, num_mc_samples)
+        value_samples = jax.vmap(_single_pass)(mc_keys)
+        critic_uncertainty = jnp.var(value_samples)
+
+        logits = actor.apply({'params': actor_params}, jnp.expand_dims(obs, 0))
+        probs = nn.softmax(logits)
+        policy_entropy = -jnp.sum(probs * jnp.log2(probs + 1e-10))
+
+        return critic_uncertainty, policy_entropy
+
+    collected_obs = []
+    key, reset_key = jax.random.split(key)
+    obs, env_state = env.reset(reset_key, env_params)
+    for _ in range(num_observations):
+        collected_obs.append(obs)
+        key, action_key, step_key = jax.random.split(key, 3)
+        logits = actor.apply({'params': actor_params}, jnp.expand_dims(obs, 0))
+        action = jnp.argmax(logits, axis=-1)[0]
+        obs, env_state, _, done, _ = env.step(step_key, env_state, action, env_params)
+        if done:
+            key, reset_key = jax.random.split(key)
+            obs, env_state = env.reset(reset_key, env_params)
+            
+    observations = jnp.stack(collected_obs)
+
+    calc_keys = jax.random.split(key, num_observations)
+    uncertainties, entropies = jax.vmap(_calculate_for_single_obs)(calc_keys, observations)
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.set_facecolor(_color_palette["background"])
+
+    ax.scatter(
+        x=uncertainties, 
+        y=entropies,
+        c=_color_palette['accent']
+    )
+
+    ax.set_title('Critic Uncertainty vs. Policy Entropy', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax.set_xlabel('Critic Uncertainty (Variance of Value Estimates)', color=_color_palette["text"], fontsize=12)
+    ax.set_ylabel('Policy Entropy (bits)', color=_color_palette["text"], fontsize=12)
+    ax.set_facecolor(_color_palette["background"])
+    ax.tick_params(colors=_color_palette["text"])
+    ax.spines['bottom'].set_color(_color_palette["secondary"])
+    ax.spines['left'].set_color(_color_palette["secondary"])
+
+    plt.tight_layout(pad=1.0)
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )
+
+
+def plot_advantages_and_inital_value_esimates(advantages: list[float], initial_value_estimates: list[float], update_steps: list[int], filename: str = 'advantages_vs_initial_value_estimates.png'):
+    update_steps = np.array(update_steps) / np.max(update_steps)
+    
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.set_facecolor(_color_palette["background"])
+
+    ax.scatter(
+        x=advantages, 
+        y=initial_value_estimates,
+        c=update_steps,
+        cmap=_custom_cmap_mpl
+    )
+
+    ax.set_title('Advantages vs Initial Value Estimates', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax.set_xlabel('Advantages', color=_color_palette["text"], fontsize=12)
+    ax.set_ylabel('Initial Value Estimates', color=_color_palette["text"], fontsize=12)
+    ax.set_facecolor(_color_palette["background"])
+    ax.tick_params(colors=_color_palette["text"])
+    ax.spines['bottom'].set_color(_color_palette["secondary"])
+    ax.spines['left'].set_color(_color_palette["secondary"])
+
+    plt.tight_layout(pad=1.0)
     plt.savefig(
         filename,
         dpi=_DPI,

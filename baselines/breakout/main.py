@@ -26,17 +26,19 @@ _ACTOR_LEARNING_RATE = 0.001
 _CRITIC_LEARNING_RATE = 0.001
 _NUM_EVAL_EPISODES = 1024
 _FINAL_NUM_EVAL_EPISODES = 1024
+_MAXIMUM_EPISODE_LENGTH = 10_000
 
 # PPO Hyperparameters
 _CLIP_EPSILON = 0.1
-_ENTROPY_COEFFICIENT = 0.05
+_ENTROPY_COEFFICIENT = 0.08
 _GAMMA = 0.95
 _LAMBDA = 0.95
+_ADVANTAGE_TAU = 0.2
 
 # Advantage type can be BASELINE, RANDOM_NOISE or BIAS
-_ADVANTAGE_TYPE = AdvantageType.BIAS
+_ADVANTAGE_TYPE = AdvantageType.BASELINE
 _RANDOM_NOISE_STDDEV = 0.002
-_CORRELATED_NOISE_COEFFICIENT = 0.08
+_CORRELATED_NOISE_COEFFICIENT = 0.2
 
 
 class Policy(nn.Module):
@@ -100,8 +102,10 @@ class Policy2(nn.Module):
 
 
 class Value(nn.Module):
+    dropout_rate: float = 0.5
+
     @nn.compact
-    def __call__(self, obs: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, obs: jnp.ndarray, use_dropout: bool = False) -> jnp.ndarray:
         x = obs
         x = nn.Conv(features=16, kernel_size=(3, 3,), strides=(1, 1,), padding='VALID')(x)
         x = nn.relu(x)
@@ -112,6 +116,7 @@ class Value(nn.Module):
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(128)(x)
         x = nn.relu(x)
+        x = nn.Dropout(rate=self.dropout_rate, deterministic=not use_dropout)(x)
         x = nn.Dense(1)(x)
         return x
 
@@ -196,14 +201,14 @@ def evaluate_agent(key, env, env_params, actor, actor_params, num_episodes: int)
             return jax.lax.cond(done, true_fn, false_fn, carry)
 
         initial_carry = (rng, obs, env_state, 0.0, False)
-        _, _, _, final_reward, _ = jax.lax.fori_loop(0, 1000, lambda _, val: step_in_env(val), initial_carry)
+        _, _, _, final_reward, _ = jax.lax.fori_loop(0, _MAXIMUM_EPISODE_LENGTH, lambda _, val: step_in_env(val), initial_carry)
         
         return final_reward
 
     keys = jax.random.split(key, num_episodes)
     all_rewards = jax.vmap(play_one_episode)(keys)
     
-    return jnp.mean(all_rewards), jnp.max(all_rewards), jnp.min(all_rewards)
+    return jnp.mean(all_rewards), jnp.max(all_rewards), jnp.min(all_rewards), jnp.median(all_rewards)
 
 
 def main():
@@ -211,6 +216,7 @@ def main():
     keys = jax.random.split(key, _PARALLEL_ENVS)
 
     env, env_params = gymnax.make('Breakout-MinAtar')
+    env_params = env_params.replace(max_steps_in_episode=_MAXIMUM_EPISODE_LENGTH) 
     
     reset = jax.vmap(env.reset, in_axes=(0, None,))
 
@@ -258,7 +264,7 @@ def main():
     print(actor.tabulate(key, jnp.zeros((1, 10, 10, 4)), depth=1))
 
     @jax.jit
-    def train_step(runner_state: RunnerState):
+    def train_step(runner_state: RunnerState, update_step: int):
         def rollout(carry, _):
             obs, env_state, key = carry
 
@@ -279,10 +285,44 @@ def main():
         initial_carry = (runner_state.obs, runner_state.env_state, runner_state.key)
         (final_obs, final_eval_state, final_key), trajectory = jax.lax.scan(rollout, initial_carry, None, length=_STEPS_PER_UPDATE)
         
-        advantages = ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, final_obs).squeeze())
+        advantages = ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, final_obs).squeeze(), _ADVANTAGE_TAU)
+
+        value_estimates_all_envs = critic.apply({'params': runner_state.critic_params}, obs).squeeze()
+
+        samples_per_env = 1
+        sampling_key, final_key = jax.random.split(final_key)
+
+        def _sample_from_one_env(key, single_env_advantages, single_env_value):
+            gae_samples = jax.random.choice(
+                key,
+                single_env_advantages[1:],
+                shape=(samples_per_env,),
+                replace=True
+            )
+            value_samples = jnp.full(
+                shape=(samples_per_env,),
+                fill_value=single_env_value
+            )
+            update_steps = jnp.full(
+                shape=(samples_per_env,),
+                fill_value=update_step
+            )
+            return gae_samples, value_samples, update_steps
+        
+        env_keys = jax.random.split(sampling_key, _PARALLEL_ENVS)
+        advantages_per_env = advantages.T
+
+        raw_gae_sample_batched, value_estimate_sample_batched, update_steps_batched = jax.vmap(
+            _sample_from_one_env, in_axes=(0, 0, 0)
+        )(env_keys, advantages_per_env, value_estimates_all_envs)
+
+        raw_gae_sample = raw_gae_sample_batched.flatten()
+        value_estimate_sample = value_estimate_sample_batched.flatten()
+        update_steps_sample = update_steps_batched.flatten()
+        
         returns = ppo_impl.calc_returns(trajectory.reward, advantages)
 
-        advantages_wrong =  ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, obs).squeeze())
+        advantages_wrong =  ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, obs).squeeze(), _ADVANTAGE_TAU)
         advantages_wrong = (advantages_wrong - advantages_wrong.mean()) / (advantages_wrong.std() + 1e-8)
 
         def _baseline_advantage(op):
@@ -353,6 +393,9 @@ def main():
             'advantages_max': advantages.max(),
             'advantages_wrong_min': advantages_wrong.min(),
             'advantages_wrong_max': advantages_wrong.max(),
+            'raw_gae': raw_gae_sample,
+            'value_estimate': value_estimate_sample,
+            'update_step': update_steps_sample,
         }
 
         return new_runner_state, metrics
@@ -369,10 +412,13 @@ def main():
     advantages_max = []
     advantages_wrong_min = []
     advantages_wrong_max = []
+    raw_gaes = []
+    initial_value_estimates = []
+    update_steps = []
     grad_norms = {}
 
     for i in range(0, _TOTAL_STEPS, _STEPS_PER_UPDATE):
-        runner_state, metrics = train_step(runner_state)
+        runner_state, metrics = train_step(runner_state, i)
 
         actor_losses.append(metrics['actor_loss'])
         critic_losses.append(metrics['critic_loss'])
@@ -382,6 +428,9 @@ def main():
         advantages_max.append(metrics['advantages_max'])
         advantages_wrong_min.append(metrics['advantages_wrong_min'])
         advantages_wrong_max.append(metrics['advantages_wrong_max'])
+        raw_gaes.extend(metrics['raw_gae'])
+        initial_value_estimates.extend(metrics['value_estimate'])
+        update_steps.extend(metrics['update_step'])
 
         actor_grads = metrics['actor_grad']
         for layer_name in actor_grads.keys():
@@ -398,7 +447,7 @@ def main():
             key, eval_key = jax.random.split(runner_state.key)
             runner_state = runner_state._replace(key=key)
             
-            avg_episode_score, _, _ = evaluate_agent(
+            avg_episode_score, _, _, _ = evaluate_agent(
                 eval_key, env, env_params, actor, runner_state.actor_params, _NUM_EVAL_EPISODES
             )
             avg_episode_rewards.append(avg_episode_score)
@@ -413,14 +462,17 @@ def main():
             print(f"  Avg Entropy: {metrics['avg_entropy']:.4f}")
 
     key, eval_key = jax.random.split(runner_state.key)
-    avg_episode_score, max_episode_score, min_episode_score = evaluate_agent(
+    avg_episode_score, max_episode_score, min_episode_score, median_episode_score = evaluate_agent(
         eval_key, env, env_params, actor, runner_state.actor_params, _FINAL_NUM_EVAL_EPISODES
     )
 
     print(f"Final Average Episode Reward: {avg_episode_score:.2f}")
+    print(f"Final Median Episode Reward: {median_episode_score:.2f}")
     print(f"Final Max Episode Reward: {max_episode_score:.2f}")
     print(f"Final Min Episode Reward: {min_episode_score:.2f}")
 
+    visualizations.plot_advantages_and_inital_value_esimates(raw_gaes, initial_value_estimates, update_steps)
+    visualizations.plot_uncertainty_vs_entropy(key, env, env_params, actor, runner_state.actor_params, critic, runner_state.critic_params)
     visualizations.plot_advantages(advantages_min, advantages_max)
     visualizations.plot_advantages(advantages_wrong_min, advantages_wrong_max, filename='advantages_wrong.png')
     visualizations.plot_advantages(jnp.subtract(jnp.array(advantages_min), jnp.array(advantages_wrong_min)).tolist(), jnp.subtract(jnp.array(advantages_max), jnp.array(advantages_wrong_max)).tolist(), filename='advantages_diff.png')

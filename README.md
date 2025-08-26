@@ -15,6 +15,8 @@ Each post in the series has a corresponding **GitHub Release** that contains a p
 
 | Post | Title | Blog Post Link | Code Release |
 | :--- | :--- | :---: | :---: |
+| #5 | Forensic RL: Investigating a Surprisingly Successful Bug | [Read Post](https://theprincipledagent.com/2025/08/26/forensic-rl-investigating-a-surprisingly-successful-bug-breakout-baseline-5/) | [v1.5](https://github.com/theprincipledagent/the_principled_agent/releases/tag/v1.4) |
+| #4 | A Whole New Worldview | [Read Post](https://theprincipledagent.com/2025/08/19/a-whole-new-worldview-breakout-baseline-4/) | [v1.4](https://github.com/theprincipledagent/the_principled_agent/releases/tag/v1.4) |
 | #3 | An Agent of Chaos | [Read Post](https://theprincipledagent.com/2025/08/12/an-agent-of-chaos-breakout-baseline-3/) | [v1.3](https://github.com/theprincipledagent/the_principled_agent/releases/tag/v1.3) |
 | #2 | Can You See What I See | [Read Post](https://theprincipledagent.com/2025/08/09/can-you-see-what-i-see-breakout-baseline-2/) | [v1.2](https://github.com/theprincipledagent/the_principled_agent/releases/tag/v1.2) |
 | #1 | Breaking Out | [Read Post](https://theprincipledagent.com/2025/08/09/breaking-out-breakout-baseline-1/) | [v1.1](https://github.com/theprincipledagent/the_principled_agent/releases/tag/v1.1) |

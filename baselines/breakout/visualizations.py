@@ -584,3 +584,28 @@ def plot_gradient_norms(grad_norms: dict, smoothing_window: int = 50, filename: 
         bbox_inches='tight',
         facecolor=fig.get_facecolor()
     )
+
+
+def plot_advantages(adv_min: list[float], adv_max: list[float], filename: str = 'advantages.png'):
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    fig, (ax1) = plt.subplots(1, 1, figsize=(12, 6))
+
+    fig.set_facecolor(_color_palette["background"])
+
+    ax1.plot(adv_min, color=_color_palette["accent"], linestyle="--")
+    ax1.plot(adv_max, color=_color_palette["primary"], linestyle="--")
+    ax1.set_title('Advantages Over Time', color=_color_palette["text"], fontsize=16, weight='bold')
+    ax1.set_ylabel('Batch-Normalized Advantage', color=_color_palette["text"], fontsize=12)
+    ax1.set_facecolor(_color_palette["background"])
+    ax1.tick_params(colors=_color_palette["text"])
+    ax1.spines['bottom'].set_color(_color_palette["secondary"])
+    ax1.spines['left'].set_color(_color_palette["secondary"])
+
+    plt.tight_layout(pad=3.0)
+    plt.savefig(
+        filename,
+        dpi=_DPI,
+        bbox_inches='tight',
+        facecolor=fig.get_facecolor()
+    )

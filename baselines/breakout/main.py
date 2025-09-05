@@ -33,7 +33,7 @@ _CLIP_EPSILON = 0.1
 _ENTROPY_COEFFICIENT = 0.08
 _GAMMA = 0.95
 _LAMBDA = 0.95
-_ADVANTAGE_TAU = 0.2
+_ADVANTAGE_TAU = 0.0
 
 # Advantage type can be BASELINE, RANDOM_NOISE or BIAS
 _ADVANTAGE_TYPE = AdvantageType.BASELINE
@@ -320,7 +320,7 @@ def main():
         value_estimate_sample = value_estimate_sample_batched.flatten()
         update_steps_sample = update_steps_batched.flatten()
         
-        returns = ppo_impl.calc_returns(trajectory.reward, advantages)
+        returns = ppo_impl.calc_returns(trajectory.val, advantages)
 
         advantages_wrong =  ppo_impl.calc_advantages(trajectory.val, trajectory.reward, trajectory.done, critic.apply({'params': runner_state.critic_params}, obs).squeeze(), _ADVANTAGE_TAU)
         advantages_wrong = (advantages_wrong - advantages_wrong.mean()) / (advantages_wrong.std() + 1e-8)

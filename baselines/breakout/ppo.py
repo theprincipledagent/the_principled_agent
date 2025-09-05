@@ -45,8 +45,8 @@ class PPO:
         return advantages
 
 
-    def calc_returns(self, rewards: jnp.ndarray, advantages: jnp.ndarray) -> jnp.ndarray:
-        return rewards + advantages
+    def calc_returns(self, values: jnp.ndarray, advantages: jnp.ndarray) -> jnp.ndarray:
+        return values + advantages
 
 
     def value_loss(self, y_hat: jnp.ndarray, y: jnp.ndarray, value_clip_epsilon: float = float('inf')) -> jnp.ndarray:
